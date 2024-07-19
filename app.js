@@ -1,15 +1,16 @@
 const getMtaRealtimeFeed = require('./getMtaRealtimeFeed');
+const fs = require('fs').promises
 
-const stopNames = {
+const stopNames = { //dont touch
     'M10N': 'Central Ave (Northbound)',
     'M10S': 'Central Ave (Southbound)',
     'M09N': 'Knickerbocker Ave (Northbound)',
     'M09S': 'Knickerbocker Ave (Southbound)'
 };
 
-// Define the offsets in seconds
-const northboundOffset = 120;
-const southboundOffset = 150;
+// Define the offsets in seconds for estimating window-crossing time
+const northboundOffset = 30; //towards central ave is northbound
+const southboundOffset = 25; //towards knickerbocker is southbound
 
 const feedname = 'bdfm'
 
@@ -18,11 +19,14 @@ setInterval(main, 10000, feedname);
 
 async function main (feedname) {
     const feed = await getMtaRealtimeFeed(feedname);
-    // writeJSON(feed);
-    checkForApproachingTrains(feed);
+    const approachingTrains = checkForApproachingTrains(feed);
+    await saveIncomingTrains(approachingTrains);
+    readAndLogIncomingTrains();
 }
 
 function checkForApproachingTrains(entities) {
+    const approachingTrains = [];
+    
     entities.forEach(entity => {
         if (entity.tripUpdate && entity.tripUpdate.trip.routeId === "M") {
             const stopTimeUpdates = entity.tripUpdate.stopTimeUpdate;
@@ -32,12 +36,38 @@ function checkForApproachingTrains(entities) {
                     const nextStopTimeUpdate = stopTimeUpdates[index + 1];
                     
                     if (isTargetStation(stopId) && nextStopTimeUpdate && isTargetStation(nextStopTimeUpdate.stopId)) {
-                        notifyApproachingTrain(entity.tripUpdate.trip, stopTimeUpdate, nextStopTimeUpdate);
+                        const approachingTrain = getApproachingTrainInfo(entity.tripUpdate.trip, stopTimeUpdate, nextStopTimeUpdate);
+                        approachingTrains.push(approachingTrain);
                     }
                 });
             }
         }
     });
+
+    return approachingTrains;
+}
+
+function getApproachingTrainInfo(trip, currentStopTimeUpdate, nextStopTimeUpdate) {
+    const nextStopId = nextStopTimeUpdate.stopId;
+    const offset = nextStopId.endsWith('N') ? northboundOffset : southboundOffset;
+
+    const arrivalTimeAtNextStop = new Date(nextStopTimeUpdate.arrival.time.low * 1000);
+    const windowCrossingTime = new Date(arrivalTimeAtNextStop.getTime() + offset * 1000).getTime();
+
+    return {
+        tripId: trip.tripId,
+        currentStop: {
+            stopId: currentStopTimeUpdate.stopId,
+            stopName: stopNames[currentStopTimeUpdate.stopId],
+            arrivalTime: currentStopTimeUpdate.arrival.time.low * 1000
+        },
+        nextStop: {
+            stopId: nextStopTimeUpdate.stopId,
+            stopName: stopNames[nextStopTimeUpdate.stopId],
+            arrivalTime: nextStopTimeUpdate.arrival.time.low * 1000
+        },
+        windowCrossingTime: windowCrossingTime
+    };
 }
 
 function isTargetStation(stopId) {
@@ -46,23 +76,43 @@ function isTargetStation(stopId) {
     } else return false
 }
 
-function notifyApproachingTrain(trip, currentStopTimeUpdate, nextStopTimeUpdate) {
-    const nextStopId = nextStopTimeUpdate.stopId;
-    const offset = nextStopId.endsWith('N') ? northboundOffset : southboundOffset;
+async function saveIncomingTrains(trains) {
+    const filePath = './incomingTrains.json';
+    await fs.writeFile(filePath, JSON.stringify(trains, null, 2));
+}
 
-    const arrivalTimeAtNextStop = new Date(nextStopTimeUpdate.arrival.time.low * 1000);
-    const timeNow = new Date();
-    const timeUntilCrossing = (arrivalTimeAtNextStop.getTime() + offset * 1000 - timeNow.getTime()) / 1000;
+async function readAndLogIncomingTrains() {
+    try {
+        const filePath = './incomingTrains.json';
+        const data = await fs.readFile(filePath, 'utf8');
+        const trains = JSON.parse(data);
 
-    const minutes = Math.floor(timeUntilCrossing / 60);
-    const seconds = Math.floor(timeUntilCrossing % 60);
+        // Sort trains by windowCrossingTime in ascending order (farthest away train first)
+        trains.sort((a, b) => b.windowCrossingTime - a.windowCrossingTime);
 
-    console.log(`Train approaching:
-        Trip ID: ${trip.tripId}
-        Current Stop: ${stopNames[currentStopTimeUpdate.stopId]} (${currentStopTimeUpdate.stopId})
-        Next Stop: ${stopNames[nextStopTimeUpdate.stopId]} (${nextStopTimeUpdate.stopId})
-        Arrival Time at Current Stop: ${new Date(currentStopTimeUpdate.arrival.time.low * 1000).toLocaleString('en-US', { timeZone: 'America/New_York', hour12: true })}
-        Arrival Time at Next Stop: ${arrivalTimeAtNextStop.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: true })}
-        Time until crossing window: ${minutes} minutes and ${seconds} seconds
-    `);
+        // Log each train object
+        trains.forEach(train => {
+            console.log({
+                tripId : train.tripId,
+                direction : String(train.currentStop.stopName).includes('Southbound') ? "Southbound" : "Northbound",
+                stopInfo : `${train.currentStop.stopName} > ${train.nextStop.stopName}`.replace(/\(.*?\)/g, ""),
+                nextStopArrival: new Date(train.nextStop.arrivalTime).toLocaleString('en-US', { 
+                    timeZone: 'America/New_York', 
+                    hour: 'numeric', 
+                    minute: 'numeric', 
+                    second: 'numeric', 
+                    hour12: true 
+                }),
+                windowCrossingTime: new Date(train.windowCrossingTime).toLocaleString('en-US', { 
+                    timeZone: 'America/New_York', 
+                    hour: 'numeric', 
+                    minute: 'numeric', 
+                    second: 'numeric', 
+                    hour12: true 
+                })
+            })
+        });
+    } catch (error) {
+        console.error('Error reading or parsing incomingTrains.json:', error);
+    }
 }
