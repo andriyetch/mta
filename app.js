@@ -9,13 +9,14 @@ const stopNames = { //dont touch
 };
 
 // Define the offsets in seconds for estimating window-crossing time
-const northboundOffset = 30; //towards central ave is northbound
-const southboundOffset = 25; //towards knickerbocker is southbound
+const northboundOffset = 30;    //towards central ave is northbound
+const southboundOffset = 25;    //towards knickerbocker is southbound
+const repeatInterval = 10;      //how often (in seconds) to hit the API
 
-const feedname = 'bdfm'
+const feedname = 'bdfm'         
 
 main(feedname);
-setInterval(main, 10000, feedname);
+setInterval(main, repeatInterval * 1000, feedname);
 
 async function main (feedname) {
     const feed = await getMtaRealtimeFeed(feedname);
